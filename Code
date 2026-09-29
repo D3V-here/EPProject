@@ -1,0 +1,143 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1 
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+Adafruit_MPU6050 mpu;
+
+const int BUTTON_PIN = 26;
+bool lastButtonState = HIGH; 
+
+float totalExposurePoints = 0.0;
+const float MAX_EXPOSURE_POINTS = 400.0; 
+float filteredVib = 0.0;
+unsigned long lastTime = 0;
+
+const float SIM_SPEED = 600.0; 
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); 
+  }
+  
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 20);
+  display.println(F("HAVS Monitor"));
+  display.println(F("Starting..."));
+  display.display();
+  delay(1000);
+
+  if (!mpu.begin()) {
+    Serial.println(F("Failed to find MPU6050 chip"));
+    while (1) { delay(10); }
+  }
+
+  mpu.setAccelerometerRange(MPU6050_RANGE_16_G);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  
+  lastTime = millis();
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  float dt = (currentTime - lastTime) / 1000.0;
+  lastTime = currentTime;
+
+  bool currentBtnState = digitalRead(BUTTON_PIN);
+  if (lastButtonState == HIGH && currentBtnState == LOW) {
+    totalExposurePoints = 0.0; 
+    delay(200); 
+  }
+  lastButtonState = currentBtnState;
+
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+
+  float mag = sqrt(pow(a.acceleration.x, 2) + pow(a.acceleration.y, 2) + pow(a.acceleration.z, 2));
+  
+  float currentVib = abs(mag - 9.81);
+  
+  filteredVib = (0.8 * filteredVib) + (0.2 * currentVib);
+  
+  if(filteredVib < 0.3) {
+      filteredVib = 0.0;
+  }
+
+  float pointsPerHour = 2.0 * (filteredVib * filteredVib);
+  float pointsAdded = pointsPerHour * (dt / 3600.0) * SIM_SPEED;
+  
+  totalExposurePoints += pointsAdded;
+  if (totalExposurePoints > MAX_EXPOSURE_POINTS) {
+      totalExposurePoints = MAX_EXPOSURE_POINTS;
+  }
+
+  int exposurePercent = (totalExposurePoints / MAX_EXPOSURE_POINTS) * 100;
+
+  display.clearDisplay();
+
+  if (exposurePercent >= 100) {
+    display.setTextSize(2);
+    display.setCursor(20, 15);
+    display.println(F("TAKE A"));
+    display.setCursor(30, 35);
+    display.println(F("BREAK"));
+  } 
+  else {
+    display.setTextSize(1);
+    
+    display.setCursor(0, 0);
+    display.print(F("Vib: "));
+    display.print(filteredVib, 1); 
+    display.println(F(" m/s2"));
+    
+    display.setCursor(0, 16);
+    display.print(F("Time Left: "));
+    
+    if (filteredVib > 0.3) {
+      float pointsLeft = MAX_EXPOSURE_POINTS - totalExposurePoints;
+      float secondsLeft = (pointsLeft / (pointsPerHour * SIM_SPEED)) * 3600.0;
+      
+      int mins = secondsLeft / 60;
+      int secs = (int)secondsLeft % 60;
+      
+      if (mins > 99) {
+        display.println(F("> 99m"));
+      } else {
+        display.print(mins);
+        display.print(F("m "));
+        display.print(secs);
+        display.println(F("s"));
+      }
+    } else {
+      display.println(F("Safe"));
+    }
+    
+    display.setCursor(0, 32);
+    display.print(F("Exposure: "));
+    display.print(exposurePercent);
+    display.println(F("%"));
+    
+    display.drawRect(0, 48, 128, 12, SSD1306_WHITE); 
+    
+    int barWidth = map(exposurePercent, 0, 100, 0, 124);
+    if (barWidth > 0) {
+        display.fillRect(2, 50, barWidth, 8, SSD1306_WHITE); 
+    }
+  }
+
+  display.display();
+
+  delay(50);
+}
